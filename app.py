@@ -13,8 +13,8 @@ APP_TITLE = "Tourism Digital Twin of Goa – Water Stress & Carrying Capacity Su
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "survey.db")
 
-# Optional admin password (set env var ADMIN_PASSWORD to enable protection)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+ADMIN_USERNAME = "givegoagroup9"
+ADMIN_PASSWORD = "987654321"
 
 
 # -----------------------------
@@ -538,13 +538,17 @@ def render_admin():
     st.caption("View responses stored locally and export CSV.")
 
     # Simple protection if ADMIN_PASSWORD is set
-    if ADMIN_PASSWORD:
-        pw = st.text_input("Admin password", type="password")
-        if pw != ADMIN_PASSWORD:
-            st.warning("Enter the correct admin password to view responses.")
-            if st.button("Back to Landing"):
-                st.session_state.page = "landing"
-            return
+    st.subheader("Admin Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if username != ADMIN_USERNAME or password != ADMIN_PASSWORD:
+        st.warning("Invalid username or password.")
+        if st.button("Back to Landing"):
+            st.session_state.page = "landing"
+        return
+
+    
 
     df = fetch_all_responses()
 
