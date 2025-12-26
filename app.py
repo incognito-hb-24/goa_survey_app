@@ -6,6 +6,9 @@ import pandas as pd
 import streamlit as st
 
 
+# -----------------------------
+# Config
+# -----------------------------
 APP_TITLE = "Tourism Digital Twin of Goa – Water Stress & Carrying Capacity Survey"
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "survey.db")
@@ -14,14 +17,20 @@ ADMIN_USERNAME = "givegoagroup9"
 ADMIN_PASSWORD = "987654321"
 
 
+# -----------------------------
+# Storage schema (kept for backward compatibility)
+# NOTE: We will NOT export *_other_text columns in CSV.
+# NOTE: We will store "Other" typed values directly into zone / age_group.
+# -----------------------------
 ALL_COLUMNS = [
     "timestamp",
     "respondent_type",
     "zone",
-    "zone_other_text",
+    "zone_other_text",         # kept (legacy), but unused in final output
     "time_in_area",
     "age_group",
-    "age_group_other_text",
+    "age_group_other_text",    # kept (legacy), but unused in final output
+    # Tourist
     "length_of_stay",
     "places_visited",
     "aware_water_stress",
@@ -31,18 +40,22 @@ ALL_COLUMNS = [
     "perceived_crowding",
     "crowding_reduces_enjoyment",
     "beach_cleanliness",
+    # Local resident
     "tourism_affects_water_availability",
     "peak_season_shortages_local",
     "tanker_dependency",
     "water_trend_years",
     "benefits_shared_fairly",
+    # Staff
     "peak_season_shortages_staff",
     "main_water_source",
     "water_saving_measures",
     "tourism_growth_increases_pressure",
+    # Worker
     "peak_season_pressure",
     "facilities_stressed",
     "infra_handles_future_growth",
+    # Sustainability
     "biggest_issue",
     "should_define_limits",
     "support_stricter_water_rules",
@@ -57,6 +70,9 @@ CREATE TABLE IF NOT EXISTS responses (
 """
 
 
+# -----------------------------
+# DB helpers (with migration)
+# -----------------------------
 def ensure_db():
     os.makedirs(DB_DIR, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
@@ -88,9 +104,16 @@ def fetch_all_responses() -> pd.DataFrame:
 
 
 def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8-sig")
+    # Excel-friendly (UTF-8 with BOM)
+    # Remove legacy columns from export
+    drop_cols = [c for c in ["zone_other_text", "age_group_other_text"] if c in df.columns]
+    out = df.drop(columns=drop_cols, errors="ignore")
+    return out.to_csv(index=False).encode("utf-8-sig")
 
 
+# -----------------------------
+# App state
+# -----------------------------
 RESPONDENT_TYPES = [
     "Tourist",
     "Local Resident",
@@ -122,7 +145,7 @@ def reset_survey():
     st.session_state.errors = []
     st.session_state.last_respondent_type = None
 
-    # Clear widget states
+    # Clear widget states so nothing is prefilled
     for k in list(st.session_state.keys()):
         if k.startswith(("q", "admin_")) or k.endswith("_w"):
             del st.session_state[k]
@@ -147,6 +170,9 @@ def multiselect_to_text(values):
     return ", ".join(values) if values else ""
 
 
+# -----------------------------
+# Validation
+# -----------------------------
 def validate_current_step(step: int) -> bool:
     st.session_state.errors = []
     f = st.session_state.form
@@ -158,46 +184,39 @@ def validate_current_step(step: int) -> bool:
     if step == 1:
         if not f.get("zone"):
             set_error("Q2 (Zone) is required.")
-        if f.get("zone") == "Other" and not f.get("zone_other_text", "").strip():
-            set_error("Q2 (Other zone) is required when Zone = Other.")
         if not f.get("time_in_area"):
             set_error("Q3 (Time in area) is required.")
-        if f.get("age_group") == "Other" and not f.get("age_group_other_text", "").strip():
-            set_error("Age group (Other) text is required when Age group = Other.")
+        # age_group optional (no validation unless you want)
 
     if step == 2:
         rt = f.get("respondent_type", "")
         if rt == "Tourist":
-            required = ["length_of_stay","places_visited","aware_water_stress","showers_per_day","drinking_water",
-                        "tourism_increases_water_demand","perceived_crowding","crowding_reduces_enjoyment","beach_cleanliness"]
-            for k in required:
-                if not str(f.get(k, "")).strip():
-                    set_error("All Tourist questions (Q4–Q12) are required.")
+            req = ["length_of_stay","places_visited","aware_water_stress","showers_per_day","drinking_water",
+                   "tourism_increases_water_demand","perceived_crowding","crowding_reduces_enjoyment","beach_cleanliness"]
+            if any(not str(f.get(k, "")).strip() for k in req):
+                set_error("All Tourist questions (Q4–Q12) are required.")
 
         elif rt == "Local Resident":
-            required = ["tourism_affects_water_availability","peak_season_shortages_local","tanker_dependency","water_trend_years","benefits_shared_fairly"]
-            for k in required:
-                if not str(f.get(k, "")).strip():
-                    set_error("All Local Resident questions (Q13–Q17) are required.")
+            req = ["tourism_affects_water_availability","peak_season_shortages_local","tanker_dependency","water_trend_years","benefits_shared_fairly"]
+            if any(not str(f.get(k, "")).strip() for k in req):
+                set_error("All Local Resident questions (Q13–Q17) are required.")
 
         elif rt in ["Hotel / Homestay / Resort Staff", "Shack / Restaurant Worker"]:
-            required = ["peak_season_shortages_staff","main_water_source","water_saving_measures","tourism_growth_increases_pressure"]
-            for k in required:
-                if not str(f.get(k, "")).strip():
-                    set_error("All Staff questions (Q18–Q21) are required.")
+            req = ["peak_season_shortages_staff","main_water_source","water_saving_measures","tourism_growth_increases_pressure"]
+            if any(not str(f.get(k, "")).strip() for k in req):
+                set_error("All Staff questions (Q18–Q21) are required.")
 
         elif rt in ["Taxi / Transport Worker", "Beach Worker / Lifeguard"]:
-            required = ["peak_season_pressure","facilities_stressed","infra_handles_future_growth"]
-            for k in required:
-                if not str(f.get(k, "")).strip():
-                    set_error("All Worker questions (Q22–Q24) are required.")
+            req = ["peak_season_pressure","facilities_stressed","infra_handles_future_growth"]
+            if any(not str(f.get(k, "")).strip() for k in req):
+                set_error("All Worker questions (Q22–Q24) are required.")
         else:
             set_error("Respondent type is missing. Go back to Step 1.")
 
     if step == 3:
-        for k in ["biggest_issue","should_define_limits","support_stricter_water_rules"]:
-            if not str(f.get(k, "")).strip():
-                set_error("Q25–Q27 are required.")
+        req = ["biggest_issue","should_define_limits","support_stricter_water_rules"]
+        if any(not str(f.get(k, "")).strip() for k in req):
+            set_error("Q25–Q27 are required.")
 
     return len(st.session_state.errors) == 0
 
@@ -207,6 +226,7 @@ def validate_current_step(step: int) -> bool:
 # -----------------------------
 def render_landing():
     st.title(APP_TITLE)
+
     st.subheader("Consent")
     st.write("This is an academic field survey for sustainable tourism planning in Goa. Participation is voluntary.")
 
@@ -223,7 +243,7 @@ def render_landing():
 
 
 # -----------------------------
-# Step 1 (form OK)
+# Step 1
 # -----------------------------
 def render_step_1():
     st.subheader(progress_label(0))
@@ -242,6 +262,7 @@ def render_step_1():
     if go_next:
         st.session_state.form["respondent_type"] = rt or ""
 
+        # Clear role-specific fields only when type changes
         if st.session_state.last_respondent_type != (rt or ""):
             for k in [
                 "length_of_stay","places_visited","aware_water_stress","showers_per_day","drinking_water",
@@ -259,7 +280,9 @@ def render_step_1():
 
 
 # -----------------------------
-# Step 2 (NO FORM -> immediate "Other" textbox)
+# Step 2 (Dynamic "Other" appears immediately)
+# IMPORTANT: no st.form here
+# AND "Other" text is stored into SAME column (zone / age_group)
 # -----------------------------
 def render_step_2():
     st.subheader(progress_label(1))
@@ -269,7 +292,7 @@ def render_step_2():
     time_options = ["<1 week", "1–4 weeks", "several months", "many years"]
     age_options = ["<18", "18-25", "26-35", "36-50", "50+", "Other"]
 
-    zone = st.selectbox(
+    st.selectbox(
         "Q2. Area you are currently in / associated with:",
         zone_options,
         index=None,
@@ -277,11 +300,15 @@ def render_step_2():
         key="q2_zone_w",
     )
 
-    zone_other = ""
-    if zone == "Other":
-        zone_other = st.text_input("Other (specify):", key="q2_other_w")
+    zone_other_box = st.empty()
+    if st.session_state.get("q2_zone_w") == "Other":
+        zone_other_box.text_input("Other (specify):", key="q2_zone_other_w")
+    else:
+        # ensure stale value doesn't hang around
+        if "q2_zone_other_w" in st.session_state:
+            st.session_state["q2_zone_other_w"] = ""
 
-    time_in_area = st.selectbox(
+    st.selectbox(
         "Q3. How long have you been in this area (visit or residence)?",
         time_options,
         index=None,
@@ -289,33 +316,63 @@ def render_step_2():
         key="q3_time_w",
     )
 
-    age_group = st.selectbox(
+    st.selectbox(
         "Age group (optional):",
         age_options,
         index=None,
         placeholder="Optional",
-        key="age_w",
+        key="q_age_w",
     )
 
-    age_other = ""
-    if age_group == "Other":
-        age_other = st.text_input("Age group (Other - specify):", key="age_other_w")
+    age_other_box = st.empty()
+    if st.session_state.get("q_age_w") == "Other":
+        age_other_box.text_input("Age group (Other - specify):", key="q_age_other_w")
+    else:
+        if "q_age_other_w" in st.session_state:
+            st.session_state["q_age_other_w"] = ""
 
     if st.button("Next", use_container_width=True):
         f = st.session_state.form
-        f["zone"] = zone or ""
-        f["zone_other_text"] = (zone_other.strip() if zone == "Other" else "")
-        f["time_in_area"] = time_in_area or ""
-        f["age_group"] = age_group or ""
-        f["age_group_other_text"] = (age_other.strip() if age_group == "Other" else "")
 
-        if validate_current_step(1):
+        zone_sel = st.session_state.get("q2_zone_w") or ""
+        zone_other = (st.session_state.get("q2_zone_other_w") or "").strip()
+
+        # Store "Other" text into SAME column
+        if zone_sel == "Other":
+            f["zone"] = zone_other
+        else:
+            f["zone"] = zone_sel
+
+        # keep legacy columns empty
+        f["zone_other_text"] = ""
+
+        f["time_in_area"] = st.session_state.get("q3_time_w") or ""
+
+        age_sel = st.session_state.get("q_age_w") or ""
+        age_other = (st.session_state.get("q_age_other_w") or "").strip()
+
+        # Store "Other" text into SAME column
+        if age_sel == "Other":
+            f["age_group"] = age_other
+        else:
+            f["age_group"] = age_sel
+
+        f["age_group_other_text"] = ""
+
+        # Extra validation: if "Other" chosen but textbox empty, block
+        st.session_state.errors = []
+        if zone_sel == "Other" and not zone_other:
+            set_error("Q2 (Other zone) is required when Zone = Other.")
+        if age_sel == "Other" and not age_other:
+            set_error("Age group (Other) text is required when Age group = Other.")
+
+        if validate_current_step(1) and not st.session_state.errors:
             st.session_state.step = 2
             st.rerun()
 
 
 # -----------------------------
-# Step 3 (keep form)
+# Step 3 (form)
 # -----------------------------
 def render_step_3():
     st.subheader(progress_label(2))
@@ -329,54 +386,54 @@ def render_step_3():
                          index=None, placeholder="Select one", key="q4_w")
             st.multiselect("Q5. Which places have you visited or plan to visit? (Multiple choice)",
                            ["Beaches","Markets","Nightlife areas","Heritage / cultural sites"], default=[], key="q5_w")
-            st.selectbox("Q6. Were you aware that Goa faces water stress, especially during peak tourist season?",
+            st.selectbox("Q6. Awareness of Goa water stress during peak season?",
                          ["Yes","No"], index=None, placeholder="Select one", key="q6_w")
-            st.selectbox("Q7. During your stay, how often do you shower per day?",
+            st.selectbox("Q7. Showers per day:",
                          ["Once","Twice","More than twice"], index=None, placeholder="Select one", key="q7_w")
-            st.selectbox("Q8. How do you usually consume drinking water?",
+            st.selectbox("Q8. Drinking water source:",
                          ["Bottled water","Hotel-provided filtered water","Both"], index=None, placeholder="Select one", key="q8_w")
-            st.selectbox("Q9. Do you think tourism significantly increases water demand in Goa?",
+            st.selectbox("Q9. Tourism increases water demand (Likert):",
                          ["Strongly agree","Agree","Neutral","Disagree"], index=None, placeholder="Select one", key="q9_w")
-            st.selectbox("Q10. How crowded do you feel this area is during your visit?",
+            st.selectbox("Q10. Perceived crowding:",
                          ["Low","Moderate","High","Very high"], index=None, placeholder="Select one", key="q10_w")
-            st.selectbox("Q11. Does crowding reduce your enjoyment of the destination?",
+            st.selectbox("Q11. Crowding reduces enjoyment:",
                          ["Not at all","Slightly","Moderately","Significantly"], index=None, placeholder="Select one", key="q11_w")
-            st.selectbox("Q12. How would you rate beach cleanliness here?",
+            st.selectbox("Q12. Beach cleanliness:",
                          ["Very clean","Clean","Average","Poor"], index=None, placeholder="Select one", key="q12_w")
 
         elif rt == "Local Resident":
             st.write("### Local Resident")
-            st.selectbox("Q13. Has tourism affected water availability in your area?",
+            st.selectbox("Q13. Tourism affected water availability?",
                          ["Yes, significantly","Yes, slightly","No"], index=None, placeholder="Select one", key="q13_w")
-            st.selectbox("Q14. During peak tourist season, do you face water shortages?",
+            st.selectbox("Q14. Peak-season water shortages?",
                          ["Frequently","Sometimes","Rarely","Never"], index=None, placeholder="Select one", key="q14_w")
-            st.selectbox("Q15. Do you rely on water tankers during peak season?",
+            st.selectbox("Q15. Tanker dependency during peak?",
                          ["Yes","No"], index=None, placeholder="Select one", key="q15_w")
-            st.selectbox("Q16. Over the years, has water availability improved or worsened?",
+            st.selectbox("Q16. Water availability trend over years:",
                          ["Improved","No change","Worsened"], index=None, placeholder="Select one", key="q16_w")
-            st.selectbox("Q17. Do you feel tourism benefits are shared fairly with local residents?",
+            st.selectbox("Q17. Tourism benefits shared fairly?",
                          ["Yes","No","Partially"], index=None, placeholder="Select one", key="q17_w")
 
         elif rt in ["Hotel / Homestay / Resort Staff", "Shack / Restaurant Worker"]:
             st.write("### Hotel / Shack / Restaurant Staff")
-            st.selectbox("Q18. During peak season, does your establishment face water shortages?",
+            st.selectbox("Q18. Establishment faces peak-season water shortages?",
                          ["Yes","No","Sometimes"], index=None, placeholder="Select one", key="q18_w")
-            st.selectbox("Q19. What is the main source of water?",
+            st.selectbox("Q19. Main source of water:",
                          ["Municipal supply","Borewell / groundwater","Water tankers","Combination"],
                          index=None, placeholder="Select one", key="q19_w")
-            st.multiselect("Q20. Are water-saving measures used? (Multiple choice)",
+            st.multiselect("Q20. Water-saving measures used? (Multiple choice)",
                            ["Towel reuse policy","Low-flow fixtures","Guest awareness signage","None"],
                            default=[], key="q20_w")
-            st.selectbox("Q21. Does tourism growth increase operational pressure on water and waste systems?",
+            st.selectbox("Q21. Tourism growth increases operational pressure?",
                          ["Yes","No","Unsure"], index=None, placeholder="Select one", key="q21_w")
 
         elif rt in ["Taxi / Transport Worker", "Beach Worker / Lifeguard"]:
             st.write("### Transport / Beach Worker")
-            st.selectbox("Q22. During peak season, how would you describe tourist pressure here?",
+            st.selectbox("Q22. Peak-season tourist pressure:",
                          ["Low","Moderate","High","Extreme"], index=None, placeholder="Select one", key="q22_w")
-            st.selectbox("Q23. Do peak tourist months increase stress on public facilities (toilets, water points)?",
+            st.selectbox("Q23. Peak months increase stress on public facilities?",
                          ["Yes","No"], index=None, placeholder="Select one", key="q23_w")
-            st.selectbox("Q24. Do you think current infrastructure can handle future tourism growth?",
+            st.selectbox("Q24. Infrastructure can handle future tourism growth?",
                          ["Yes","No","Not sure"], index=None, placeholder="Select one", key="q24_w")
         else:
             st.warning("Respondent type missing. Go back to Step 1.")
@@ -386,7 +443,7 @@ def render_step_3():
 
     if go_next:
         f = st.session_state.form
-        # Normalize + store quickly
+
         if rt == "Tourist":
             f["length_of_stay"] = (st.session_state.get("q4_w") or "").replace("More than 7 days", ">7 days")
             f["places_visited"] = multiselect_to_text(st.session_state.get("q5_w", [])).lower()
@@ -397,12 +454,14 @@ def render_step_3():
             f["perceived_crowding"] = (st.session_state.get("q10_w") or "").lower()
             f["crowding_reduces_enjoyment"] = (st.session_state.get("q11_w") or "").lower()
             f["beach_cleanliness"] = (st.session_state.get("q12_w") or "").lower()
+
         elif rt == "Local Resident":
             f["tourism_affects_water_availability"] = (st.session_state.get("q13_w") or "").replace("Yes, significantly","yes significantly").replace("Yes, slightly","yes slightly").replace("No","no")
             f["peak_season_shortages_local"] = (st.session_state.get("q14_w") or "").lower()
             f["tanker_dependency"] = (st.session_state.get("q15_w") or "").lower()
             f["water_trend_years"] = (st.session_state.get("q16_w") or "").lower()
             f["benefits_shared_fairly"] = (st.session_state.get("q17_w") or "").lower()
+
         elif rt in ["Hotel / Homestay / Resort Staff", "Shack / Restaurant Worker"]:
             f["peak_season_shortages_staff"] = (st.session_state.get("q18_w") or "").lower()
             f["main_water_source"] = (st.session_state.get("q19_w") or "").replace("Municipal supply","municipal").replace("Borewell / groundwater","borewell/groundwater").replace("Water tankers","tankers").replace("Combination","combination")
@@ -410,6 +469,7 @@ def render_step_3():
             mapped = [x.replace("Towel reuse policy","towel reuse").replace("Low-flow fixtures","low-flow fixtures").replace("Guest awareness signage","signage").replace("None","none") for x in raw]
             f["water_saving_measures"] = multiselect_to_text(mapped)
             f["tourism_growth_increases_pressure"] = (st.session_state.get("q21_w") or "").lower()
+
         elif rt in ["Taxi / Transport Worker", "Beach Worker / Lifeguard"]:
             f["peak_season_pressure"] = (st.session_state.get("q22_w") or "").lower()
             f["facilities_stressed"] = (st.session_state.get("q23_w") or "").lower()
@@ -421,7 +481,7 @@ def render_step_3():
 
 
 # -----------------------------
-# Step 4 (keep form)
+# Step 4 (form)
 # -----------------------------
 def render_step_4():
     st.subheader(progress_label(3))
@@ -451,11 +511,6 @@ def render_step_4():
         if validate_current_step(3):
             ensure_db()
             f["timestamp"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-            if f.get("zone") != "Other":
-                f["zone_other_text"] = ""
-            if f.get("age_group") != "Other":
-                f["age_group_other_text"] = ""
 
             insert_response(f)
             st.success("Response submitted.")
@@ -492,6 +547,9 @@ def render_survey():
             st.rerun()
 
 
+# -----------------------------
+# Admin
+# -----------------------------
 def render_admin():
     st.title("Admin")
 
@@ -499,7 +557,7 @@ def render_admin():
         with st.form("admin_login_form", clear_on_submit=False):
             username = st.text_input("Username", key="admin_user_w")
             password = st.text_input("Password", type="password", key="admin_pass_w")
-            login = st.form_submit_button("Enter")
+            login = st.form_submit_button("Enter")  # Enter key works
 
         if not login:
             if st.button("Back to Landing", use_container_width=True):
@@ -523,8 +581,16 @@ def render_admin():
     if len(df) == 0:
         st.info("No responses yet.")
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", df_to_csv_bytes(df), "goa_survey_responses.csv", "text/csv", use_container_width=True)
+        st.dataframe(df.drop(columns=["zone_other_text", "age_group_other_text"], errors="ignore"),
+                     use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "Download CSV",
+            data=df_to_csv_bytes(df),
+            file_name="goa_survey_responses.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     c1, c2 = st.columns(2)
     with c1:
