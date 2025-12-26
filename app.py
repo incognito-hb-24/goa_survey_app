@@ -27,6 +27,7 @@ ALL_COLUMNS = [
     "zone_other_text",
     "time_in_area",
     "age_group",
+    "age_group_other_text",  # NEW
     # Tourist
     "length_of_stay",
     "places_visited",
@@ -68,12 +69,23 @@ CREATE TABLE IF NOT EXISTS responses (
 
 
 # -----------------------------
-# DB helpers
+# DB helpers (with simple migration)
 # -----------------------------
 def ensure_db():
     os.makedirs(DB_DIR, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(CREATE_TABLE_SQL)
+        conn.commit()
+
+        # Migration: add missing columns if DB already existed
+        existing_cols = set()
+        rows = conn.execute("PRAGMA table_info(responses);").fetchall()
+        for r in rows:
+            existing_cols.add(r[1])  # name
+
+        for col in ALL_COLUMNS:
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE responses ADD COLUMN {col} TEXT;")
         conn.commit()
 
 
@@ -95,7 +107,8 @@ def fetch_all_responses() -> pd.DataFrame:
 
 
 def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
+    # Excel-friendly: UTF-8 with BOM
+    return df.to_csv(index=False).encode("utf-8-sig")
 
 
 # -----------------------------
@@ -132,7 +145,7 @@ def reset_survey():
     st.session_state.errors = []
     st.session_state.last_respondent_type = None
 
-    # Clear widget states (so nothing appears prefilled)
+    # Clear widget states so nothing stays pre-filled
     for k in list(st.session_state.keys()):
         if k.endswith("_w") or k.startswith("q") or k.startswith("admin_"):
             del st.session_state[k]
@@ -175,6 +188,10 @@ def validate_current_step(step: int) -> bool:
             set_error("Q2 (Other zone) is required when Zone = Other.")
         if not f.get("time_in_area"):
             set_error("Q3 (Time in area) is required.")
+
+        # Age group is optional, but if Other is chosen then other text should be required
+        if f.get("age_group") == "Other" and not f.get("age_group_other_text", "").strip():
+            set_error("Age group (Other) text is required when Age group = Other.")
 
     if step == 2:
         rt = f.get("respondent_type", "")
@@ -286,7 +303,6 @@ def render_step_1():
     if go_next:
         st.session_state.form["respondent_type"] = rt or ""
 
-        # Clear role-specific fields only if type changes (and also blank old values)
         if st.session_state.last_respondent_type != (rt or ""):
             for k in [
                 "length_of_stay", "places_visited", "aware_water_stress", "showers_per_day", "drinking_water",
@@ -309,7 +325,8 @@ def render_step_2():
 
     zone_options = ["Baga", "Calangute", "Anjuna", "Candolim", "Vagator", "Other"]
     time_options = ["<1 week", "1–4 weeks", "several months", "many years"]
-    age_options = ["<18", "18–25", "26–35", "36–50", "50+"]
+    # Use plain hyphen so Excel reads cleanly
+    age_options = ["<18", "18-25", "26-35", "36-50", "50+", "Other"]
 
     with st.form("step2_form", clear_on_submit=False):
         zone = st.selectbox(
@@ -319,7 +336,6 @@ def render_step_2():
             placeholder="Select one",
             key="q2_zone_w",
         )
-
         zone_other = ""
         if zone == "Other":
             zone_other = st.text_input("Other (specify):", key="q2_other_w")
@@ -340,6 +356,10 @@ def render_step_2():
             key="age_w",
         )
 
+        age_other = ""
+        if age_group == "Other":
+            age_other = st.text_input("Age group (Other - specify):", key="age_other_w")
+
         go_next = st.form_submit_button("Next")
 
     if go_next:
@@ -347,7 +367,10 @@ def render_step_2():
         f["zone"] = zone or ""
         f["zone_other_text"] = (zone_other.strip() if zone == "Other" else "")
         f["time_in_area"] = time_in_area or ""
+
+        # Optional, but store properly
         f["age_group"] = age_group or ""
+        f["age_group_other_text"] = (age_other.strip() if age_group == "Other" else "")
 
         if validate_current_step(1):
             st.session_state.step = 2
@@ -548,11 +571,10 @@ def render_step_3():
 
         if rt == "Tourist":
             f["length_of_stay"] = (st.session_state.get("q4_w") or "").replace("More than 7 days", ">7 days").strip()
-            f["places_visited"] = multiselect_to_text(st.session_state.get("q5_w", []))
+            f["places_visited"] = multiselect_to_text(st.session_state.get("q5_w", [])).lower()
             f["aware_water_stress"] = (st.session_state.get("q6_w") or "").strip().lower()
             f["showers_per_day"] = (st.session_state.get("q7_w") or "").replace("Once", "1").replace("Twice", "2").replace("More than twice", ">2")
             f["drinking_water"] = (st.session_state.get("q8_w") or "")
-            # Normalize to spec values
             f["drinking_water"] = (
                 f["drinking_water"]
                 .replace("Bottled water", "bottled")
@@ -586,7 +608,7 @@ def render_step_3():
                 .replace("Water tankers", "tankers")
                 .replace("Combination", "combination")
             )
-            # Store in spec-style values
+
             raw_wsm = st.session_state.get("q20_w", [])
             mapped = []
             for item in raw_wsm:
@@ -663,6 +685,9 @@ def render_step_4():
             if f.get("zone") != "Other":
                 f["zone_other_text"] = ""
 
+            if f.get("age_group") != "Other":
+                f["age_group_other_text"] = ""
+
             insert_response(f)
 
             st.success("Response submitted.")
@@ -711,16 +736,12 @@ def render_admin():
         with st.form("admin_login_form", clear_on_submit=False):
             username = st.text_input("Username", key="admin_user_w")
             password = st.text_input("Password", type="password", key="admin_pass_w")
-            login = st.form_submit_button("Enter")  # Enter key works
+            login = st.form_submit_button("Enter")
 
         if not login:
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Back to Landing", use_container_width=True):
-                    st.session_state.page = "landing"
-                    st.rerun()
-            with c2:
-                st.empty()
+            if st.button("Back to Landing", use_container_width=True):
+                st.session_state.page = "landing"
+                st.rerun()
             return
 
         if username != ADMIN_USERNAME or password != ADMIN_PASSWORD:
@@ -740,6 +761,7 @@ def render_admin():
         st.info("No responses yet.")
     else:
         st.dataframe(df, use_container_width=True, hide_index=True)
+
         st.download_button(
             "Download CSV",
             data=df_to_csv_bytes(df),
@@ -758,8 +780,6 @@ def render_admin():
                 other_text = df["zone_other_text"].fillna("")
                 zone_display = zone_series.where(zone_series != "Other", "Other: " + other_text)
                 st.bar_chart(zone_display.value_counts())
-
-            st.bar_chart(df["biggest_issue"].value_counts())
         except Exception:
             st.info("Summary charts unavailable.")
 
@@ -782,7 +802,6 @@ def main():
     init_state()
     ensure_db()
 
-    # Sidebar: keep minimal; disable navigation during survey
     with st.sidebar:
         if st.session_state.page != "survey":
             if st.button("Home", use_container_width=True):
